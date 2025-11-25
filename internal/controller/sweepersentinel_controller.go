@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,7 +81,26 @@ func (r *SweeperSentinelReconciler) fetchNamespaceResources(
 		annotations := resource.GetAnnotations()
 		if ttl := annotations["sweeper-sentinel.cloudflavor.io/ttl"]; ttl != "" {
 			ttl := annotations["sweeper-sentinel.cloudflavor.io/ttl"]
-			fmt.Println(ttl)
+			createdAt := resource.GetCreationTimestamp()
+			fmt.Printf("%#v %s\n", createdAt, ttl)
+			ttlConverted, err := parseTTL(ttl)
+
+			if err != nil {
+				fmt.Printf("failed to parse TTL:  %s", err)
+				continue
+			}
+
+			expires := createdAt.Add(ttlConverted)
+			currentTime := time.Now()
+
+			if currentTime.After(expires) {
+				if err := r.Client.Delete(ctx, &resource); err != nil {
+					fmt.Printf("failed to delete resource: %s\n", err)
+					continue
+				} else {
+					fmt.Printf("expired resource %s was deleted, TTL exceeded %s\n", resource.GetName(), ttl)
+				}
+			}
 		}
 	}
 	return nil
@@ -121,4 +142,16 @@ func (r *SweeperSentinelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&sweeperv1.SweeperSentinel{}).
 		Named("sweepersentinel").Complete(r)
+}
+
+func parseTTL(ttl string) (time.Duration, error) {
+	if strings.HasSuffix(ttl, "d") {
+		dayStr := strings.TrimSuffix(ttl, "d")
+		days, err := strconv.Atoi(dayStr)
+		if err != nil {
+			return 0, err
+		}
+		return time.Hour * 24 * time.Duration(days), nil
+	}
+	return time.ParseDuration(ttl)
 }
