@@ -1,0 +1,29 @@
+# This rule is not used by the project sweeper-sentinel itself.
+# It is provided to allow the cluster admin to help manage permissions for users.
+#
+# Grants read-only access to sweeper.sweeper-sentinel.cloudflavor.io resources.
+# This role is intended for users who need visibility into these resources
+# without permissions to modify them. It is ideal for monitoring purposes and limited-access viewing.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: sweeper-sentinel
+    app.kubernetes.io/managed-by: kustomize
+  name: sweepersentinel-viewer-role
+rules:
+- apiGroups:
+  - sweeper.sweeper-sentinel.cloudflavor.io
+  resources:
+  - sweepersentinels
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - sweeper.sweeper-sentinel.cloudflavor.io
+  resources:
+  - sweepersentinels/status
+  verbs:
+  - get

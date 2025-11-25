@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- sweeper_v1_sweepersentinel.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

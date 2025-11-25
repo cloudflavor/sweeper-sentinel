@@ -1,0 +1,11 @@
+---
+apiVersion: sweeper.sweeper-sentinel.cloudflavor.io/v1
+kind: SweeperSentinel
+metadata:
+  name: test-sweeper
+  namespace: sweeper-sentinel
+spec:
+  ttl: "10m"
+  targets:
+    - apiVersion: "v1"
+      kind: "Pod"
