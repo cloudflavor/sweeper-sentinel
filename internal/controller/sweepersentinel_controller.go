@@ -27,9 +27,11 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	sweeperv1 "github.com/cloudflavor/sweeper-sentinel/api/v1"
 )
@@ -40,105 +42,140 @@ type SweeperSentinelReconciler struct {
 	Scheme       *runtime.Scheme
 	TickInterval time.Duration
 
-	watchedGVKs map[string][]schema.GroupVersionKind
+	watchedGVKs map[string][]targetConfig
 	watchMutex  sync.RWMutex
+
+	targetsInitialized bool
 }
 
-// +kubebuilder:rbac:groups=sweeper.sweeper-sentinel.cloudflavor.io,resources=sweepersentinels,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=sweeper.sweeper-sentinel.cloudflavor.io,resources=sweepersentinels/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=sweeper.sweeper-sentinel.cloudflavor.io,resources=sweepersentinels/finalizers,verbs=update
+type targetConfig struct {
+	gvk schema.GroupVersionKind
+}
+
+const (
+	ttlAnnotationKey  = "sweepers.sentinel.cloudflavor.io/ttl"
+	enabledLabelKey   = "sweepers.sentinel.cloudflavor.io/enabled"
+	enabledLabelValue = "true"
+)
+
+// +kubebuilder:rbac:groups=sweepers.sentinel.cloudflavor.io,resources=sweepersentinels,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=sweepers.sentinel.cloudflavor.io,resources=sweepersentinels/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=sweepers.sentinel.cloudflavor.io,resources=sweepersentinels/finalizers,verbs=update
 func (r *SweeperSentinelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	if err := r.fetchSentinels(ctx); err != nil {
+	logger := log.FromContext(ctx).WithValues("request", req.NamespacedName)
+	shouldSyncTargets := req.NamespacedName != (types.NamespacedName{}) || !r.targetsInitialized
+	if shouldSyncTargets {
+		if err := r.buildWatchConfig(ctx); err != nil {
+			logger.Error(err, "failed to build watch configuration")
+			return ctrl.Result{}, err
+		}
+		r.targetsInitialized = true
+	}
+
+	if err := r.sweepNamespaces(ctx); err != nil {
+		logger.Error(err, "failed to sweep namespaces")
 		return ctrl.Result{}, err
 	}
 
-	if err := r.sweep(ctx); err != nil {
-		return ctrl.Result{}, err
+	requeueAfter := r.TickInterval
+	if requeueAfter <= 0 {
+		requeueAfter = 10 * time.Second
 	}
 
-	// TODO: uncomment below, this is for now used for testing
-	// return ctrl.Result{RequeueAfter: r.TickInterval}, nil
-	return ctrl.Result{RequeueAfter: time.Second * 10}, nil
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
-func (r *SweeperSentinelReconciler) sweep(ctx context.Context) error {
+func (r *SweeperSentinelReconciler) sweepNamespaces(ctx context.Context) error {
+	log := log.FromContext(ctx)
+	r.watchMutex.RLock()
+	defer r.watchMutex.RUnlock()
+
 	for namespace, targets := range r.watchedGVKs {
 		for _, target := range targets {
-			r.fetchNamespaceResources(ctx, namespace, target)
+			if err := r.sweepTarget(ctx, namespace, target); err != nil {
+				log.Error(err, "failed to sweep target", "namespace", namespace, "gvk", target.gvk.String())
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-func (r *SweeperSentinelReconciler) fetchNamespaceResources(
-	ctx context.Context, ns string, gvk schema.GroupVersionKind,
-) error {
+func (r *SweeperSentinelReconciler) sweepTarget(ctx context.Context, namespace string, target targetConfig) error {
+	log := log.FromContext(ctx)
 	ul := unstructured.UnstructuredList{}
-	ul.SetGroupVersionKind(gvk)
+	ul.SetGroupVersionKind(target.gvk)
 
-	r.Client.List(ctx, &ul, client.InNamespace(ns))
-	for _, resource := range ul.Items {
-		annotations := resource.GetAnnotations()
-		if ttl := annotations["sweeper-sentinel.cloudflavor.io/ttl"]; ttl != "" {
-			ttl := annotations["sweeper-sentinel.cloudflavor.io/ttl"]
-			createdAt := resource.GetCreationTimestamp()
-			fmt.Printf("%#v %s\n", createdAt, ttl)
-			ttlConverted, err := parseTTL(ttl)
+	if err := r.Client.List(ctx, &ul, client.InNamespace(namespace)); err != nil {
+		return fmt.Errorf("list %s in namespace %s: %w", target.gvk.String(), namespace, err)
+	}
 
-			if err != nil {
-				fmt.Printf("failed to parse TTL:  %s", err)
-				continue
-			}
-
-			expires := createdAt.Add(ttlConverted)
-			currentTime := time.Now()
-
-			if currentTime.After(expires) {
-				if err := r.Client.Delete(ctx, &resource); err != nil {
-					fmt.Printf("failed to delete resource: %s\n", err)
-					continue
-				} else {
-					fmt.Printf("expired resource %s was deleted, TTL exceeded %s\n", resource.GetName(), ttl)
-				}
-			}
+	var sweepErr error
+	for i := range ul.Items {
+		resource := &ul.Items[i]
+		if err := r.maybeDeleteExpired(ctx, resource); err != nil {
+			log.Error(err, "failed to handle resource", "name", resource.GetName(), "namespace", resource.GetNamespace())
+			sweepErr = err
 		}
 	}
+
+	return sweepErr
+}
+
+func (r *SweeperSentinelReconciler) maybeDeleteExpired(ctx context.Context, resource *unstructured.Unstructured) error {
+	if resource.GetLabels()[enabledLabelKey] != enabledLabelValue {
+		return nil
+	}
+
+	ttl := resource.GetAnnotations()[ttlAnnotationKey]
+	if ttl == "" {
+		return nil
+	}
+
+	ttlConverted, err := parseTTL(ttl)
+	if err != nil {
+		return fmt.Errorf("parse ttl for %s/%s: %w", resource.GetNamespace(), resource.GetName(), err)
+	}
+
+	expires := resource.GetCreationTimestamp().Add(ttlConverted)
+	if time.Now().After(expires) {
+		if err := r.Client.Delete(ctx, resource); err != nil {
+			return fmt.Errorf("delete expired resource %s/%s: %w", resource.GetNamespace(), resource.GetName(), err)
+		}
+		log.FromContext(ctx).Info("deleted expired resource", "name", resource.GetName(), "namespace", resource.GetNamespace(), "gvk", resource.GroupVersionKind().String(), "ttl", ttl)
+	}
+
 	return nil
 }
 
-func (r *SweeperSentinelReconciler) fetchSentinels(ctx context.Context) error {
-	ul := sweeperv1.SweeperSentinelList{}
-	err := r.Client.List(ctx, &ul)
-	if err != nil {
+func (r *SweeperSentinelReconciler) buildWatchConfig(ctx context.Context) error {
+	log := log.FromContext(ctx)
+	sentinels := sweeperv1.SweeperSentinelList{}
+	if err := r.Client.List(ctx, &sentinels); err != nil {
 		return err
 	}
 
-	for _, sentinel := range ul.Items {
-		gvks := []schema.GroupVersionKind{}
-
-		if _, ok := r.watchedGVKs[sentinel.Namespace]; !ok {
-			r.watchedGVKs[sentinel.Namespace] = []schema.GroupVersionKind{}
-		}
-
+	updated := make(map[string][]targetConfig)
+	for _, sentinel := range sentinels.Items {
 		for _, target := range sentinel.Spec.Targets {
 			gv, err := schema.ParseGroupVersion(target.APIVersion)
 			if err != nil {
-				fmt.Printf("failed to parse group version: %s\n", err)
+				log.Error(err, "failed to parse group version", "apiVersion", target.APIVersion, "kind", target.Kind)
 				continue
 			}
-
-			gvks = append(gvks, gv.WithKind(target.Kind))
+			updated[sentinel.Namespace] = append(updated[sentinel.Namespace], targetConfig{gvk: gv.WithKind(target.Kind)})
 		}
-
-		r.watchedGVKs[sentinel.Namespace] = gvks
 	}
 
+	r.watchMutex.Lock()
+	defer r.watchMutex.Unlock()
+	r.watchedGVKs = updated
 	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *SweeperSentinelReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.watchedGVKs = make(map[string][]schema.GroupVersionKind)
+	r.watchedGVKs = make(map[string][]targetConfig)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&sweeperv1.SweeperSentinel{}).
 		Named("sweepersentinel").Complete(r)

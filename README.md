@@ -54,16 +54,15 @@ make deploy IMG=<your-registry>/sweeper-sentinel:tag
 
 ### Usage
 
-Create a SweeperSentinel resource to define cleanup policies:
+Create a SweeperSentinel resource to define which GVKs should be pruned. TTLs are provided on the target resources themselves via the `sweepers.sentinel.cloudflavor.io/ttl` annotation, and resources must opt in with the `sweepers.sentinel.cloudflavor.io/enabled: "true"` label:
 
 ```yaml
-apiVersion: sweeper.sweeper-sentinel.cloudflavor.io/v1
+apiVersion: sweepers.sentinel.cloudflavor.io/v1
 kind: SweeperSentinel
 metadata:
   name: dev-cleanup
   namespace: development
 spec:
-  ttl: "2h"  # Resources older than 2 hours will be deleted
   targets:
     - apiVersion: "v1"
       kind: "Pod"
@@ -73,7 +72,21 @@ spec:
       kind: "ConfigMap"
 ```
 
-**TTL Format:**
+Annotate any resource you want Sweeper Sentinel to prune:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example
+  namespace: development
+  labels:
+    sweepers.sentinel.cloudflavor.io/enabled: "true"
+  annotations:
+    sweepers.sentinel.cloudflavor.io/ttl: "2h"
+```
+
+**TTL Annotation Format:**
 - `s` - seconds (e.g., "30s")
 - `m` - minutes (e.g., "10m")
 - `h` - hours (e.g., "2h")
@@ -81,14 +94,15 @@ spec:
 
 ### Examples
 
+> **RBAC NOTE:** The controller requires wildcard list/watch/delete access so it can manage whatever GVKs you specify. Scope Sweeper Sentinel to dedicated namespaces and only label/annotate resources you explicitly want pruned.
+
 **Example 1: Clean up test Pods after 10 minutes**
 ```yaml
-apiVersion: sweeper.sweeper-sentinel.cloudflavor.io/v1
+apiVersion: sweepers.sentinel.cloudflavor.io/v1
 kind: SweeperSentinel
 metadata:
   name: pod-cleanup
 spec:
-  ttl: "10m"
   targets:
     - apiVersion: "v1"
       kind: "Pod"
@@ -96,12 +110,11 @@ spec:
 
 **Example 2: Comprehensive ephemeral resource cleanup**
 ```yaml
-apiVersion: sweeper.sweeper-sentinel.cloudflavor.io/v1
+apiVersion: sweepers.sentinel.cloudflavor.io/v1
 kind: SweeperSentinel
 metadata:
   name: ephemeral-cleanup
 spec:
-  ttl: "1h"
   targets:
     - apiVersion: "v1"
       kind: "Pod"
@@ -119,12 +132,11 @@ spec:
 
 **Example 3: Watch custom resources**
 ```yaml
-apiVersion: sweeper.sweeper-sentinel.cloudflavor.io/v1
+apiVersion: sweepers.sentinel.cloudflavor.io/v1
 kind: SweeperSentinel
 metadata:
   name: custom-resource-cleanup
 spec:
-  ttl: "24h"
   targets:
     - apiVersion: "myapp.example.com/v1"
       kind: "MyCustomResource"

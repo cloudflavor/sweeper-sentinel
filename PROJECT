@@ -3,7 +3,7 @@
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
 cliVersion: 4.9.0
-domain: sweeper-sentinel.cloudflavor.io
+domain: sentinel.cloudflavor.io
 layout:
 - go.kubebuilder.io/v4
 projectName: sweeper-sentinel
@@ -13,8 +13,8 @@ resources:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: sweeper-sentinel.cloudflavor.io
-  group: sweeper
+  domain: sentinel.cloudflavor.io
+  group: sweepers
   kind: SweeperSentinel
   path: github.com/cloudflavor/sweeper-sentinel/api/v1
   version: v1

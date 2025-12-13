@@ -1,4 +1,4 @@
-apiVersion: sweeper.sweeper-sentinel.cloudflavor.io/v1
+apiVersion: sweepers.sentinel.cloudflavor.io/v1
 kind: SweeperSentinel
 metadata:
   labels:
@@ -6,7 +6,6 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: sweepersentinel-sample
 spec:
-  ttl: "10m"
   targets:
     - apiVersion: "v1"
       kind: "Pod"

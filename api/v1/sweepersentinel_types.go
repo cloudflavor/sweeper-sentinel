@@ -23,12 +23,6 @@ import (
 
 // SweeperSentinelSpec defines the desired state of SweeperSentinel
 type SweeperSentinelSpec struct {
-	// Time-to-Live - a period of time that the resource should live represented by
-	// s (seconds) - m (minutes) - d (days).
-	// +kubebuilder:validation:MinLength=2
-	// +required
-	TTL *string `json:"ttl"`
-
 	// Targets - a user defined list of GVK to prune
 	Targets []Target `json:"targets"`
 }

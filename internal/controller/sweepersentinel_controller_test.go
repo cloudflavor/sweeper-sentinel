@@ -18,9 +18,11 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -38,14 +40,26 @@ var _ = Describe("SweeperSentinel Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "sweeper-sentinel", // TODO(user):Modify as needed
+			Namespace: "sweeper-sentinel",
+		}
+
+		ensureNamespaceExists := func() {
+			ns := &corev1.Namespace{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: typeNamespacedName.Namespace}, ns); err != nil {
+				if errors.IsNotFound(err) {
+					ns.Name = typeNamespacedName.Namespace
+					Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+				} else {
+					Expect(err).NotTo(HaveOccurred())
+				}
+			}
 		}
 		sweepersentinel := &sweeperv1.SweeperSentinel{}
 
 		BeforeEach(func() {
+			ensureNamespaceExists()
 			By("creating the custom resource for the Kind SweeperSentinel")
 			err := k8sClient.Get(ctx, typeNamespacedName, sweepersentinel)
-			ttl := "10ms"
 			if err != nil && errors.IsNotFound(err) {
 				resource := &sweeperv1.SweeperSentinel{
 					ObjectMeta: metav1.ObjectMeta{
@@ -53,7 +67,6 @@ var _ = Describe("SweeperSentinel Controller", func() {
 						Namespace: "sweeper-sentinel",
 					},
 					Spec: sweeperv1.SweeperSentinelSpec{
-						TTL: &ttl,
 						Targets: []sweeperv1.Target{
 							{
 								APIVersion: "v1",
@@ -88,6 +101,25 @@ var _ = Describe("SweeperSentinel Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
+		})
+	})
+
+	Context("parseTTL", func() {
+		DescribeTable("should parse supported durations",
+			func(input string, expected time.Duration) {
+				dur, err := parseTTL(input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(dur).To(Equal(expected))
+			},
+			Entry("seconds", "30s", 30*time.Second),
+			Entry("minutes", "10m", 10*time.Minute),
+			Entry("hours", "2h", 2*time.Hour),
+			Entry("days", "3d", 72*time.Hour),
+		)
+
+		It("should error on invalid input", func() {
+			_, err := parseTTL("not-a-duration")
+			Expect(err).To(HaveOccurred())
 		})
 	})
 })
